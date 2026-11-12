@@ -63,7 +63,10 @@ export function ytdlpAttemptArgs(args: string[], useCookies: boolean, cookieFile
     const pluginDir = process.env.YTDLP_BGUTIL_PLUGIN_DIR;
     const serverHome = process.env.YTDLP_BGUTIL_SERVER_HOME;
     if (pluginDir && serverHome) {
-      result.push("--plugin-dirs", pluginDir, "--extractor-args", `youtubepot-bgutilscript:server_home=${serverHome}`);
+      // The tv_samsung client hands back googlevideo URLs that answer 403 for
+      // videos with ad breaks, which broke direct HLS playback on the TV app.
+      result.push("--plugin-dirs", pluginDir, "--extractor-args", `youtubepot-bgutilscript:server_home=${serverHome}`,
+        "--extractor-args", "youtube:player_client=default,-tv_samsung");
     }
   }
   return result;

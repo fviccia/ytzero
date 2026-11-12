@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { createVideoPlayer, VideoView } from "expo-video";
-import { AppState, Modal, StyleSheet, Text, View } from "react-native";
+import { AppState, Modal, Platform, StyleSheet, Text, View } from "react-native";
 import { ApiError, type YtZeroApi } from "../api";
 import type { Translate } from "../i18n";
 import { PlaybackProgress, validPlaybackPosition, type PlaybackResult } from "../playback";
@@ -49,6 +49,7 @@ export function TvNativePlayer(props: Props) {
   const detailsButton = useRef<View>(null);
   const [modalVisible, setModalVisible] = useState(false);
   const [panelFocused, setPanelFocused] = useState(false);
+  const [panelInteractive, setPanelInteractive] = useState(Platform.OS === "ios");
   const initial = useRef({ video, startPosition });
   const session = useRef<Session | null>(null);
   const alive = useRef(true);
@@ -153,7 +154,11 @@ export function TvNativePlayer(props: Props) {
 
   const exitPresentation = async () => {
     try {
-      if (session.current && await dismissPlayer(session.current.entry.player)) {
+      if (Platform.OS === "android") {
+        fullscreen.current = false;
+        setPresented(false);
+        if (!failure.current) void close();
+      } else if (session.current && await dismissPlayer(session.current.entry.player)) {
         fullscreen.current = false;
         setPresented(false);
         if (!failure.current) void close();
@@ -263,7 +268,7 @@ export function TvNativePlayer(props: Props) {
     void (async () => {
       if (!fullscreen.current) {
         fullscreen.current = true;
-        await view.current?.enterFullscreen();
+        if (Platform.OS === "ios") await view.current?.enterFullscreen();
         if (!current()) return;
         setPresented(true);
       }
@@ -276,7 +281,27 @@ export function TvNativePlayer(props: Props) {
       .finally(() => { if (activating.current === active) activating.current = null; });
   };
   useEffect(() => { present(); }, [active, ready]);
-  useTvModalBack(!presented, () => { if (fullscreen.current) void exitPresentation(); else void close(); }, true);
+  const handleBack = () => {
+    // Android: the first Back hides the transport controls instead of leaving
+    // playback, so a stray press does not end the video.
+    if (Platform.OS === "android") {
+      const hide = (view.current as unknown as { hideControllerIfVisible?: () => Promise<boolean> } | null)?.hideControllerIfVisible;
+      if (hide) {
+        void hide.call(view.current).then((hidden) => {
+          if (!hidden) { if (fullscreen.current) void exitPresentation(); else void close(); }
+        }).catch(() => { if (fullscreen.current) void exitPresentation(); else void close(); });
+        return;
+      }
+    }
+    if (fullscreen.current) void exitPresentation(); else void close();
+  };
+  useTvModalBack(Platform.OS === "android" || !presented, handleBack, true);
+
+  useEffect(() => {
+    if (Platform.OS !== "android" || !modalVisible) return;
+    const timer = setTimeout(() => setPanelInteractive(true), 450);
+    return () => clearTimeout(timer);
+  }, [modalVisible]);
 
   useEffect(() => {
     if (!active) return;
@@ -299,6 +324,9 @@ export function TvNativePlayer(props: Props) {
       player.addListener("playToEnd", () => {
         const current = session.current;
         if (!current || current.entry !== active || current.finished || switching.current) return;
+        // Android players report an empty playlist as ended before any media is
+        // loaded; only an item that actually played can have reached its end.
+        if (!current.didPlay) return;
         current.completed = active.video.live_status !== "live";
         const next = latest.current.advanceOnEnd ? latest.current.nextVideo : null;
         if (next) void advance(next);
@@ -372,17 +400,17 @@ export function TvNativePlayer(props: Props) {
     // When the item is ready, the earlier present effect is handing focus to
     // AVKit in this same commit. Stop any loading-panel focus retries instead
     // of competing with the native fullscreen controller.
-    if (!modalVisible || presented || dismissing || (!error && active && ready)) return;
+    if (!modalVisible || !panelInteractive || presented || dismissing || (!error && active && ready)) return;
     const target = error && error !== "playbackRestricted" ? retryButton.current : detailsButton.current;
     if (target) return focusWhenReady(target, () => setPanelFocused(true));
-  }, [active, dismissing, error, modalVisible, presented, ready]);
+  }, [active, dismissing, error, modalVisible, panelInteractive, presented, ready]);
 
   const currentVideo = active?.video ?? video;
   return (
-    <Modal visible animationType="none" onShow={() => { modalShown.current = true; setModalVisible(true); present(); }} onRequestClose={() => { if (fullscreen.current) void exitPresentation(); else void close(); }}>
+    <Modal visible transparent animationType="none" onShow={() => { modalShown.current = true; setModalVisible(true); present(); }} onRequestClose={handleBack}>
       <TvFocusScope style={styles.screen}>
         <VideoView ref={view} player={active?.player ?? null} style={StyleSheet.absoluteFill} nativeControls contentFit="contain"
-          fullscreenOptions={{ enable: true }} allowsPictureInPicture={false}
+          fullscreenOptions={{ enable: Platform.OS === "ios" }} allowsPictureInPicture={false}
           onFullscreenExit={() => {
             fullscreen.current = false;
             setPresented(false);
@@ -394,9 +422,9 @@ export function TvNativePlayer(props: Props) {
           <Text accessibilityRole="header" numberOfLines={3} style={styles.title}>{currentVideo.title}</Text>
           <Text style={styles.description}>{error ? t(error) : currentVideo.channel_title}</Text>
           <View style={styles.actions}>
-            <TvBackButton t={t} focusable={panelFocused} onPress={() => void close()} />
-            <TvButton ref={detailsButton} deferPress label={t("videoDetails")} preferredFocus={!error || error === "playbackRestricted"} onFocus={() => setPanelFocused(true)} onPress={() => { showDetails.current = true; void close(); }} />
-            {error && error !== "playbackRestricted" ? <TvButton ref={retryButton} label={t("tryAgain")} preferredFocus variant="primary" onPress={() => { switching.current = false; setAttempt((value) => value + 1); }} /> : null}
+            <TvBackButton t={t} focusable={panelInteractive && panelFocused} onPress={() => { if (panelInteractive) void close(); }} />
+            <TvButton ref={detailsButton} deferPress focusable={panelInteractive} label={t("videoDetails")} preferredFocus={panelInteractive && (!error || error === "playbackRestricted")} onFocus={() => setPanelFocused(true)} onPress={() => { if (!panelInteractive) return; showDetails.current = true; void close(); }} />
+            {error && error !== "playbackRestricted" ? <TvButton ref={retryButton} focusable={panelInteractive} label={t("tryAgain")} preferredFocus={panelInteractive} variant="primary" onPress={() => { if (!panelInteractive) return; switching.current = false; setAttempt((value) => value + 1); }} /> : null}
           </View>
         </View> : null}
       </TvFocusScope>

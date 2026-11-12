@@ -66,6 +66,27 @@ export class PlaybackBuffer {
     const checkReady = () => {
       if (!disposed && !entry.error && loaded && playable) { clearTimeout(timeout); resolveReady(); }
     };
+    let pendingSubtitles: Array<{ language?: string | null }> | null = null;
+    const finishLoad = (resolvedDuration: number, subtitles: Array<{ language?: string | null }>) => {
+      if (disposed || entry.error || loaded) return;
+      if (!live && (!Number.isFinite(resolvedDuration) || resolvedDuration <= 0)) {
+        fail(new Error("Invalid playback duration"));
+        return;
+      }
+      loaded = true;
+      void (async () => {
+        try {
+          if (position > 0) await this.seek(player, Math.min(position, Math.max(0, resolvedDuration - 1)));
+          if (disposed || entry.error) return;
+          if (video.channel_caption_mode === "off") player.subtitleTrack = null;
+          else if (video.channel_caption_language) {
+            const track = subtitles.find((item) => item.language === video.channel_caption_language);
+            if (track) player.subtitleTrack = track as typeof player.subtitleTrack;
+          }
+          checkReady();
+        } catch (error) { fail(error); }
+      })();
+    };
     const listeners = [
       player.addListener("playingChange", ({ isPlaying }) => {
         // Native controls or a late native command must never start a neighbour.
@@ -74,25 +95,21 @@ export class PlaybackBuffer {
       player.addListener("statusChange", ({ status, error }) => {
         if (status === "error" && sourceUri) fail(error ?? new Error("Native source failed"));
         playable = status === "readyToPlay";
+        if (playable && !loaded && pendingSubtitles !== null) {
+          finishLoad(player.duration, pendingSubtitles);
+        }
         checkReady();
       }),
       player.addListener("sourceLoad", ({ videoSource, duration, availableSubtitleTracks }) => {
         const uri = typeof videoSource === "string" ? videoSource : typeof videoSource === "object" ? videoSource?.uri : null;
         if (disposed || !sourceUri || sourceUri !== uri) return;
-        if (!live && (!Number.isFinite(duration) || duration <= 0)) { fail(new Error("Invalid playback duration")); return; }
-        void (async () => {
-          try {
-            if (position > 0) await this.seek(player, Math.min(position, Math.max(0, duration - 1)));
-            if (disposed || entry.error) return;
-            if (video.channel_caption_mode === "off") player.subtitleTrack = null;
-            else if (video.channel_caption_language) {
-              const track = availableSubtitleTracks.find((item) => item.language === video.channel_caption_language);
-              if (track) player.subtitleTrack = track;
-            }
-            loaded = true;
-            checkReady();
-          } catch (error) { fail(error); }
-        })();
+        const effectiveDuration = Number.isFinite(duration) && duration > 0 ? duration : player.duration;
+        if (!live && (!Number.isFinite(effectiveDuration) || effectiveDuration <= 0)) {
+          pendingSubtitles = availableSubtitleTracks;
+          if (playable) finishLoad(player.duration, availableSubtitleTracks);
+          return;
+        }
+        finishLoad(effectiveDuration, availableSubtitleTracks);
       }),
     ];
     const releaseTicket = (authorization: PlaybackTicket) => {

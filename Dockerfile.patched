@@ -1,0 +1,11 @@
+# Server image with the local patches applied on top of the pinned upstream digest.
+#
+# Build:
+#   docker build -f Dockerfile.patched -t <registry>/franco/ytzero:patched .
+#
+# The base image keeps `/app` as the working directory, so the patched sources
+# replace the ones baked into the release image without rebuilding it.
+FROM ghcr.io/pelski/ytzero@sha256:c9989d5c7362f7f8ea0d724ac661f53cea4d39a6158bc22b3a5272033a145a96
+
+COPY app/src/videoCompletion.ts /app/src/videoCompletion.ts
+COPY app/src/downloadConfig.ts /app/src/downloadConfig.ts

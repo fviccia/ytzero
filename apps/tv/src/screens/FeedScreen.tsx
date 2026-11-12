@@ -180,7 +180,8 @@ export function FeedScreen({ active, api, videoUpdate, destination, feedSort, fo
 
   const visibleTags = useMemo(() => visibleFeedTags(tags), [tags]);
   const dueScheduled = useMemo(() => dueScheduledVideos(scheduled), [scheduled]);
-  const featured = home && appliedFilter.tags.length === 0 && dueScheduled.length > 0;
+  // The scheduled-videos carousel is intentionally hidden on TV.
+  const featured = false;
   useEffect(() => { onBackdropScroll.setValue(0); }, [onBackdropScroll]);
   const feedVideos = useMemo(() => home ? withoutInProgress(videos, [...inProgress, ...(featured ? dueScheduled : [])])
     : destination === "/watchlist" ? scheduledVideosInOrder(videos) : videos, [destination, featured, home, inProgress, dueScheduled, videos]);

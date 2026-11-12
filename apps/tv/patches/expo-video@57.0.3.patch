@@ -1,0 +1,229 @@
+diff --git a/android/src/main/java/expo/modules/video/VideoModule.kt b/android/src/main/java/expo/modules/video/VideoModule.kt
+index 71b8501..5340d0f 100644
+--- a/android/src/main/java/expo/modules/video/VideoModule.kt
++++ b/android/src/main/java/expo/modules/video/VideoModule.kt
+@@ -425,6 +425,9 @@ private inline fun <reified T : VideoView> ViewDefinitionBuilder<T>.VideoViewCom
+   AsyncFunction("exitFullscreen") { view: T ->
+     VideoManager.finishFullscreenPlayer(view.videoViewId)
+   }.runOnQueue(Queues.MAIN)
++  AsyncFunction("hideControllerIfVisible") { view: T ->
++    view.hideControllerIfVisible()
++  }.runOnQueue(Queues.MAIN)
+   AsyncFunction("startPictureInPicture") { view: T ->
+     runWithPiPMisconfigurationSoftHandling(true) {
+       view.enterPictureInPicture()
+diff --git a/android/src/main/java/expo/modules/video/VideoView.kt b/android/src/main/java/expo/modules/video/VideoView.kt
+index 58c8b10..6548d38 100644
+--- a/android/src/main/java/expo/modules/video/VideoView.kt
++++ b/android/src/main/java/expo/modules/video/VideoView.kt
+@@ -4,9 +4,11 @@ import android.app.Activity
+ import android.content.Context
+ import android.content.Intent
+ import android.graphics.Color
++import android.graphics.drawable.GradientDrawable
+ import android.os.Build
+ import android.view.accessibility.CaptioningManager
+ import android.view.LayoutInflater
++import android.view.KeyEvent
+ import android.view.MotionEvent
+ import android.view.View
+ import android.view.ViewGroup
+@@ -82,6 +84,7 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+   private val decorView = currentActivity.window.decorView
+   private val touchEventCoalescingKeyHelper = TouchEventCoalescingKeyHelper()
+   private var reactNativeEventDispatcher: EventDispatcher? = null
++  private var controllerVisible = false
+   private var captioningChangeListener: CaptioningManager.CaptioningChangeListener? = null
+ 
+   private val windowFocusChangeListener = View.OnFocusChangeListener { _, hasFocus ->
+@@ -190,6 +193,8 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+     // The prop `useNativeControls` prop is sometimes applied after the view is created, and sometimes there is a visible
+     // flash of controls event when they are set to off. Initially we set it to `false` and apply it in `onAttachedToWindow` to avoid this.
+     this.playerView.useController = false
++    this.playerView.isFocusable = true
++    this.playerView.descendantFocusability = ViewGroup.FOCUS_AFTER_DESCENDANTS
+ 
+     // Start with the SurfaceView being transparent to avoid any flickers when the prop value is delivered.
+     this.playerView.setShutterBackgroundColor(Color.TRANSPARENT)
+@@ -206,6 +211,82 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+     )
+ 
+     reactNativeEventDispatcher = UIManagerHelper.getEventDispatcher(appContext.reactContext as ReactContext, id)
++    // Media3 paints a full-screen 60% black veil behind the transport controls,
++    // which darkens the whole video while they are visible on a television.
++    playerView.findViewById<View>(androidx.media3.ui.R.id.exo_controls_background)
++      ?.setBackgroundColor(Color.argb(89, 0, 0, 0))
++    applyControllerFocusHighlight(playerView)
++    playerView.setControllerVisibilityListener(androidx.media3.ui.PlayerView.ControllerVisibilityListener { visibility ->
++      controllerVisible = visibility == View.VISIBLE
++    })
++    playerView.setControllerAutoShow(true)
++    playerView.setControllerShowTimeoutMs(4000)
++  }
++
++  /**
++   * On a television, Back should dismiss the transport controls before it
++   * leaves playback, so a single stray press does not end the video.
++   */
++  override fun dispatchKeyEvent(event: KeyEvent): Boolean {
++    if (event.keyCode == KeyEvent.KEYCODE_BACK && controllerVisible) {
++      if (event.action == KeyEvent.ACTION_DOWN) return true
++      if (event.action == KeyEvent.ACTION_UP) {
++        playerView.hideController()
++        playerView.requestFocus()
++        return true
++      }
++    }
++    return super.dispatchKeyEvent(event)
++  }
++
++  /**
++   * Media3's transport controls draw almost no focus state on Android TV, so a
++   * remote user cannot tell whether play, seek or the settings button is
++   * selected. Fill the focused control with the app accent and scale it up.
++   */
++  private fun applyControllerFocusHighlight(root: View) {
++    if (root is ViewGroup) {
++      for (index in 0 until root.childCount) applyControllerFocusHighlight(root.getChildAt(index))
++      return
++    }
++    if (!root.isFocusable) return
++    // The time bar is a thin line inside a much taller view; any background
++    // highlight looks like a thick slab, so it keeps Media3's own styling.
++    if (root is androidx.media3.ui.DefaultTimeBar) return
++    val originalBackground = root.background
++    root.setOnFocusChangeListener { view, hasFocus ->
++      val target = view as View
++      if (hasFocus) {
++        val radius = if (target.height > 0) target.height / 2f else 24f
++        val wide = target.width > 200
++        target.background = GradientDrawable().apply {
++          shape = GradientDrawable.RECTANGLE
++          cornerRadius = radius
++          if (wide) {
++            // The time bar spans the screen; filling it would look like a thick
++            // blue slab, so outline it instead.
++            setColor(Color.TRANSPARENT)
++            setStroke((3 * resources.displayMetrics.density).toInt(), 0xFF0A5FFF.toInt())
++          } else {
++            setColor(0xF20A5FFF.toInt())
++          }
++        }
++        val scale = if (!wide && target.width > 0) 1.18f else 1f
++        target.animate().scaleX(scale).scaleY(scale).setDuration(120).start()
++      } else {
++        target.background = originalBackground
++        target.animate().scaleX(1f).scaleY(1f).setDuration(120).start()
++      }
++    }
++  }
++
++  /** Hides the transport controls when they are on screen; false otherwise. */
++  fun hideControllerIfVisible(): Boolean {
++    val controller = playerView.findViewById<View>(androidx.media3.ui.R.id.exo_controller)
++    if (controller?.isShown != true) return false
++    playerView.hideController()
++    playerView.requestFocus()
++    return true
+   }
+ 
+   fun applySurfaceViewVisibility() {
+@@ -314,6 +395,7 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+   override fun onIsPlayingChanged(player: VideoPlayer, isPlaying: Boolean, oldIsPlaying: Boolean?) {
+     if (player == videoPlayer && isPlaying) {
+       wasAutoPaused = false
++      playerView.post { playerView.requestFocus() }
+     }
+   }
+ 
+@@ -347,11 +429,12 @@ open class VideoView(context: Context, appContext: AppContext, useTextureView: B
+     // We need to disable it to keep scrubbing impossible.
+ 
+     pipParams = pipParams.copy(rectHint = calculateRectHint(playerView))
+-    playerView.setTimeBarInteractive(videoPlayer?.requiresLinearPlayback ?: true)
++    playerView.setTimeBarInteractive(videoPlayer?.requiresLinearPlayback ?: false)
+   }
+ 
+   override fun onAttachedToWindow() {
+     super.onAttachedToWindow()
++    playerView.useController = useNativeControls
+ 
+     // Set up listener for accessibility caption changes when attached to window
+     setupCaptioningChangeListener()
+diff --git a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+index 8bae522..1539ded 100644
+--- a/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
++++ b/android/src/main/java/expo/modules/video/player/VideoPlayer.kt
+@@ -254,7 +254,7 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+       availableVideoTracks = tracks.toVideoTracks(hlsManifest)
+       refreshPlaybackInfo()
+ 
+-      if (isLoadingNewSource) {
++      if (isLoadingNewSource && !tracks.isEmpty && (duration > 0f || isLive)) {
+         sendEvent(
+           PlayerEvent.VideoSourceLoaded(
+             commitedSource,
+@@ -313,6 +313,18 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+       }
+       if (playbackState == Player.STATE_READY) {
+         refreshPlaybackInfo()
++        if (isLoadingNewSource && (duration > 0f || isLive)) {
++          sendEvent(
++            PlayerEvent.VideoSourceLoaded(
++              commitedSource,
++              duration.toDouble(),
++              availableVideoTracks,
++              subtitles.availableSubtitleTracks,
++              audioTracks.availableAudioTracks
++            )
++          )
++          isLoadingNewSource = false
++        }
+       }
+       setStatus(playerStateToPlayerStatus(playbackState), null)
+       super.onPlaybackStateChanged(playbackState)
+@@ -462,7 +474,9 @@ class VideoPlayer(val context: Context, appContext: AppContext, source: VideoSou
+       PlaybackError(it)
+     }
+ 
+-    if (playbackError == null && player.playbackState == Player.STATE_ENDED) {
++    // An empty player also reports STATE_ENDED; without a committed source this
++    // is not the end of any media and must not be announced as playback end.
++    if (playbackError == null && commitedSource != null && player.playbackState == Player.STATE_ENDED) {
+       sendEvent(PlayerEvent.PlayedToEnd())
+     }
+ 
+diff --git a/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt b/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
+index 460fb7b..9443981 100644
+--- a/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
++++ b/android/src/main/java/expo/modules/video/utils/DataSourceUtils.kt
+@@ -26,7 +26,10 @@ fun buildBaseDataSourceFactory(context: Context, videoSource: VideoSource): Data
+ 
+ @OptIn(UnstableApi::class)
+ fun buildOkHttpDataSourceFactory(context: Context, videoSource: VideoSource): OkHttpDataSource.Factory {
+-  val client = OkHttpClient.Builder().build()
++  val client = OkHttpClient.Builder()
++    .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
++    .readTimeout(30, java.util.concurrent.TimeUnit.SECONDS)
++    .build()
+ 
+   // If the application name has ANY non-ASCII characters, we need to strip them out. This is because using non-ASCII characters
+   // in the User-Agent header can cause issues with getting the media to play.
+diff --git a/expo-module.config.json b/expo-module.config.json
+index f3a1ba4..6d6ecae 100644
+--- a/expo-module.config.json
++++ b/expo-module.config.json
+@@ -4,12 +4,6 @@
+     "modules": ["VideoModule"]
+   },
+   "android": {
+-    "modules": ["expo.modules.video.VideoModule"],
+-    "publication": {
+-      "groupId": "host.exp.exponent",
+-      "artifactId": "expo.modules.video",
+-      "version": "57.0.3",
+-      "repository": "local-maven-repo"
+-    }
++    "modules": ["expo.modules.video.VideoModule"]
+   }
+ }

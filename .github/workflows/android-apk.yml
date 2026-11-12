@@ -1,0 +1,56 @@
+name: Android TV APK
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: android-actions/setup-android@v3
+
+      # react-native-tvos 0.86 needs this NDK for the new architecture build.
+      - name: Install NDK
+        run: yes | sdkmanager --install "ndk;27.1.12297006" > /dev/null
+
+      - name: Install dependencies
+        working-directory: apps/tv
+        run: bun install
+
+      - name: Generate native project
+        working-directory: apps/tv
+        run: bunx expo prebuild --platform android --no-install
+
+      # lintVitalRelease fails on the upstream extra iOS-only translations, so
+      # it is skipped here exactly like in local builds.
+      - name: Build release APK
+        working-directory: apps/tv/android
+        run: >-
+          ./gradlew assembleRelease
+          -x lintVitalRelease -x lintVitalAnalyzeRelease -x lintVitalReportRelease
+          -PreactNativeArchitectures=armeabi-v7a,arm64-v8a
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ytzero-tv-apk
+          path: apps/tv/android/app/build/outputs/apk/release/app-release.apk
+
+      - name: Attach APK to the release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: apps/tv/android/app/build/outputs/apk/release/app-release.apk
