@@ -24,9 +24,16 @@ jobs:
       # The ubuntu runner image already ships the Android SDK; only the NDK
       # version react-native-tvos 0.86 needs has to be added.
       - name: Install NDK
+        env:
+          ANDROID_SDK_ROOT: /usr/local/lib/android/sdk
         run: |
-          sdkmanager --version
-          yes | sdkmanager --install "ndk;27.1.12297006" > /dev/null
+          set -euxo pipefail
+          SDKMANAGER="$ANDROID_SDK_ROOT/cmdline-tools/latest/bin/sdkmanager"
+          test -x "$SDKMANAGER"
+          "$SDKMANAGER" --version
+          yes | "$SDKMANAGER" --licenses > /dev/null || true
+          "$SDKMANAGER" --sdk_root="$ANDROID_SDK_ROOT" --install "ndk;27.1.12297006"
+          ls "$ANDROID_SDK_ROOT/ndk"
 
       - name: Install dependencies
         working-directory: apps/tv
