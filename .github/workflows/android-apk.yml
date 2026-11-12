@@ -21,11 +21,12 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: android-actions/setup-android@v3
-
-      # react-native-tvos 0.86 needs this NDK for the new architecture build.
+      # The ubuntu runner image already ships the Android SDK; only the NDK
+      # version react-native-tvos 0.86 needs has to be added.
       - name: Install NDK
-        run: yes | sdkmanager --install "ndk;27.1.12297006" > /dev/null
+        run: |
+          sdkmanager --version
+          yes | sdkmanager --install "ndk;27.1.12297006" > /dev/null
 
       - name: Install dependencies
         working-directory: apps/tv
